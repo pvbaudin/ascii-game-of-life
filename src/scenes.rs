@@ -66,43 +66,70 @@ pub fn stamp(life: &mut Life, pat: &Pattern, ox: isize, oy: isize) {
     }
 }
 
-pub fn build(scene: Scene, life: &mut Life, rng: &mut Rng, density: f32) {
+/// A text label for the garden scene, in world-cell coordinates.
+pub struct Label {
+    pub x: usize,
+    pub y: usize,
+    pub text: String,
+}
+
+pub fn build(scene: Scene, life: &mut Life, rng: &mut Rng, density: f32) -> Vec<Label> {
     life.clear();
     match scene {
         Scene::Garden => garden(life),
-        Scene::Soup => soup(life, rng, density),
-        Scene::Methuselah => methuselah(life, rng),
+        Scene::Soup => {
+            soup(life, rng, density);
+            Vec::new()
+        }
+        Scene::Methuselah => {
+            methuselah(life, rng);
+            Vec::new()
+        }
     }
 }
 
-fn garden(life: &mut Life) {
-    // Collect still lifes + oscillators, lay out on a spaced grid.
-    let mut specimens: Vec<Pattern> = Vec::new();
+fn garden(life: &mut Life) -> Vec<Label> {
+    // Collect still lifes + oscillators (with names), sorted by height so
+    // similar sizes shelf-pack tightly rather than being dominated by the pulsar.
+    let mut specimens: Vec<(&'static str, Pattern)> = Vec::new();
     for p in patterns::in_category(Category::StillLife) {
-        specimens.push(p.pattern());
+        specimens.push((p.name, p.pattern()));
     }
     for p in patterns::in_category(Category::Oscillator) {
-        specimens.push(p.pattern());
+        specimens.push((p.name, p.pattern()));
     }
+    specimens.sort_by_key(|(_, p)| p.height);
 
-    // Cell box big enough for the largest specimen plus margin.
-    let cell_w = specimens.iter().map(|p| p.width).max().unwrap_or(6) + 4;
-    let cell_h = specimens.iter().map(|p| p.height).max().unwrap_or(6) + 4;
-    let cols = (life.width / cell_w).max(1);
+    // Shelf-packing: flow left→right, wrap to a new shelf when the row is full.
+    // Each item reserves space for the pattern plus a label row beneath it.
+    let mut labels = Vec::new();
+    let margin_x = 3usize;
+    let mut x = 1usize;
+    let mut y = 1usize;
+    let mut shelf_h = 0usize;
 
-    for (i, pat) in specimens.iter().enumerate() {
-        let gx = i % cols;
-        let gy = i / cols;
-        let ox = gx * cell_w + 2;
-        let oy = gy * cell_h + 2;
-        if oy + pat.height >= life.height {
+    for (name, pat) in &specimens {
+        let box_w = pat.width.max(name.len()) + margin_x;
+        if x + box_w >= life.width {
+            // New shelf.
+            x = 1;
+            y += shelf_h + 2;
+            shelf_h = 0;
+        }
+        let item_h = pat.height + 1; // +1 for the label row
+        if y + item_h >= life.height {
             break;
         }
-        // Center the specimen inside its cell box.
-        let cx = ox + (cell_w - 4 - pat.width) / 2;
-        let cy = oy + (cell_h - 4 - pat.height) / 2;
-        stamp(life, pat, cx as isize, cy as isize);
+        stamp(life, pat, x as isize, y as isize);
+        labels.push(Label {
+            x,
+            y: y + pat.height,
+            text: name.to_string(),
+        });
+        shelf_h = shelf_h.max(item_h);
+        x += box_w + 1;
     }
+    labels
 }
 
 fn soup(life: &mut Life, rng: &mut Rng, density: f32) {

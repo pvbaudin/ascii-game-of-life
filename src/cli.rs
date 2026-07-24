@@ -31,6 +31,7 @@ pub struct Config {
     pub test: bool,
     pub diag: Option<u64>,
     pub bench: bool,
+    pub snapshot: Option<u64>,
 }
 
 impl Default for Config {
@@ -51,6 +52,7 @@ impl Default for Config {
             test: false,
             diag: None,
             bench: false,
+            snapshot: None,
         }
     }
 }
@@ -172,6 +174,13 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> ParseOutcome {
                 cfg.diag = Some(n);
             }
             "bench" => cfg.bench = true,
+            "snapshot" => {
+                let n = inline
+                    .or_else(|| it.peek().filter(|s| !s.starts_with("--")).cloned().inspect(|_| { it.next(); }))
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0);
+                cfg.snapshot = Some(n);
+            }
             other => return ParseOutcome::Error(format!("unknown flag: --{other}")),
         }
     }
@@ -214,6 +223,7 @@ HEADLESS HARNESSES (no terminal needed):\n\
     --test                  Run invariant checks (blinker/block/glider) & exit\n\
     --diag [N]              Print population/change over N gens & exit\n\
     --bench                 Benchmark update+render across grid sizes & exit\n\
+    --snapshot [N]          Print one rendered frame after N gens & exit\n\
 \n\
     --help                  Show this help\n\
     --version               Show version\n\

@@ -194,3 +194,40 @@ pub fn run_bench(cfg: &Config) -> i32 {
     let _ = Scheme::Neon;
     0
 }
+
+/// `--snapshot [gens]`: build the scene, step it `gens` times, and print a
+/// single rendered frame (real truecolor ANSI) to stdout, then exit. No live
+/// terminal needed — handy for eyeballing a scene or piping to a file.
+pub fn run_snapshot(cfg: &Config, gens: u64) -> i32 {
+    // Prefer explicit COLUMNS/LINES (handy for reproducible snapshots), then
+    // the real terminal size, else a sensible default.
+    let env_dim = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    let (cols, rows) = match (env_dim("COLUMNS"), env_dim("LINES")) {
+        (Some(c), Some(r)) => (c, r),
+        _ => crossterm::terminal::size()
+            .map(|(c, r)| (c as usize, r as usize))
+            .unwrap_or((80, 24)),
+    };
+    let cols = cols.max(1);
+    let rows = rows.max(1);
+    let renderer = Renderer {
+        braille: cfg.braille,
+        mono: cfg.mono,
+        show_trails: cfg.trails,
+    };
+    let (ww, wh) = renderer.world_size(cols, rows);
+    let mut life = Life::new(ww, wh, cfg.wrap);
+    let mut rng = Rng::new(cfg.seed);
+    let labels = scenes::build(cfg.scene, &mut life, &mut rng, cfg.density);
+    for _ in 0..gens {
+        life.step();
+    }
+    let overlay = crate::build_overlay(&labels, cols, rows, renderer.braille);
+    let ov = if overlay.is_empty() { None } else { Some(overlay.as_slice()) };
+    let mut frame = String::new();
+    renderer.render_with(&life, cfg.scheme, cols, rows, None, ov, &mut frame);
+    // Replace the cursor-home lead so it prints inline, and end with a newline.
+    let frame = frame.replacen("\x1b[H", "", 1);
+    println!("{frame}");
+    0
+}

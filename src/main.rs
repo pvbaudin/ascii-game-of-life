@@ -64,6 +64,9 @@ fn main() {
     if cfg.bench {
         std::process::exit(harness::run_bench(&cfg));
     }
+    if let Some(n) = cfg.snapshot {
+        std::process::exit(harness::run_snapshot(&cfg, n));
+    }
 
     if let Err(e) = run(cfg) {
         // Ensure the terminal is sane before reporting.
@@ -121,7 +124,8 @@ fn run(mut cfg: Config) -> std::io::Result<()> {
     let (ww, wh) = renderer.world_size(cols, rows);
     let mut life = Life::new(ww, wh, cfg.wrap);
     let mut rng = Rng::new(cfg.seed);
-    scenes::build(cfg.scene, &mut life, &mut rng, cfg.density);
+    let mut labels = scenes::build(cfg.scene, &mut life, &mut rng, cfg.density);
+    let mut overlay = build_overlay(&labels, cols, rows, renderer.braille);
 
     let mut frame = String::with_capacity(cols * rows * 4);
     let mut paused = false;
@@ -141,14 +145,16 @@ fn run(mut cfg: Config) -> std::io::Result<()> {
                             cfg.seed = cfg.seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                             cfg.scene = cfg.scene.next();
                             rng = Rng::new(cfg.seed);
-                            scenes::build(cfg.scene, &mut life, &mut rng, cfg.density);
+                            labels = scenes::build(cfg.scene, &mut life, &mut rng, cfg.density);
+                            overlay = build_overlay(&labels, cols, rows, renderer.braille);
                         }
                         KeyAction::ToggleBraille => {
                             renderer.braille = cfg.braille;
                             let (ww, wh) = renderer.world_size(cols, rows);
                             life.resize(ww, wh);
                             rng = Rng::new(cfg.seed);
-                            scenes::build(cfg.scene, &mut life, &mut rng, cfg.density);
+                            labels = scenes::build(cfg.scene, &mut life, &mut rng, cfg.density);
+                            overlay = build_overlay(&labels, cols, rows, renderer.braille);
                             out.execute(terminal::Clear(terminal::ClearType::All))?;
                         }
                         KeyAction::ToggleMono => renderer.mono = cfg.mono,
@@ -161,6 +167,7 @@ fn run(mut cfg: Config) -> std::io::Result<()> {
                     let (ww, wh) = renderer.world_size(cols, rows);
                     life.resize(ww, wh);
                     text_engine.resize(cols, rows);
+                    overlay = build_overlay(&labels, cols, rows, renderer.braille);
                     out.execute(terminal::Clear(terminal::ClearType::All))?;
                 }
                 _ => {}
@@ -182,7 +189,8 @@ fn run(mut cfg: Config) -> std::io::Result<()> {
         } else {
             None
         };
-        renderer.render(&life, cfg.scheme, cols, rows, reveal, &mut frame);
+        let ov = if overlay.is_empty() { None } else { Some(overlay.as_slice()) };
+        renderer.render_with(&life, cfg.scheme, cols, rows, reveal, ov, &mut frame);
         out.write_all(frame.as_bytes())?;
         out.flush()?;
 
@@ -193,6 +201,30 @@ fn run(mut cfg: Config) -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Rasterize garden labels into a `cols*rows` overlay grid. Labels are in
+/// world-cell coordinates; in braille mode a world cell is a sub-pixel (2×4 per
+/// character) so text would be unreadable — we only show labels in glyph mode,
+/// where world cells map 1:1 to terminal cells.
+fn build_overlay(labels: &[scenes::Label], cols: usize, rows: usize, braille: bool) -> Vec<char> {
+    if braille || labels.is_empty() {
+        return Vec::new();
+    }
+    let mut grid = vec![' '; cols * rows];
+    for label in labels {
+        if label.y >= rows {
+            continue;
+        }
+        for (i, ch) in label.text.chars().enumerate() {
+            let x = label.x + i;
+            if x >= cols {
+                break;
+            }
+            grid[label.y * cols + x] = ch;
+        }
+    }
+    grid
 }
 
 enum KeyAction {

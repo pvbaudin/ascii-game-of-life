@@ -36,7 +36,9 @@ impl Renderer {
 
     /// Render a frame. `cols`/`rows` are the terminal size. `reveal`, when
     /// present, is a `cols*rows` grid of characters (glyph mode only): a live
-    /// cell reveals `reveal[i]` instead of a density glyph.
+    /// cell reveals `reveal[i]` instead of a density glyph. `overlay`, when
+    /// present, is a `cols*rows` grid of dim label characters drawn on empty
+    /// cells (used for the garden scene's labels).
     pub fn render(
         &self,
         life: &Life,
@@ -46,14 +48,27 @@ impl Renderer {
         reveal: Option<&[char]>,
         out: &mut String,
     ) {
+        self.render_with(life, scheme, cols, rows, reveal, None, out);
+    }
+
+    pub fn render_with(
+        &self,
+        life: &Life,
+        scheme: Scheme,
+        cols: usize,
+        rows: usize,
+        reveal: Option<&[char]>,
+        overlay: Option<&[char]>,
+        out: &mut String,
+    ) {
         out.clear();
         out.push_str("\x1b[H"); // cursor home
         let mut last: Option<Rgb> = None;
 
         if self.braille {
-            self.render_braille(life, scheme, cols, rows, &mut last, out);
+            self.render_braille(life, scheme, cols, rows, overlay, &mut last, out);
         } else {
-            self.render_glyph(life, scheme, cols, rows, reveal, &mut last, out);
+            self.render_glyph(life, scheme, cols, rows, reveal, overlay, &mut last, out);
         }
         out.push_str("\x1b[0m");
     }
@@ -65,13 +80,14 @@ impl Renderer {
         cols: usize,
         rows: usize,
         reveal: Option<&[char]>,
+        overlay: Option<&[char]>,
         last: &mut Option<Rgb>,
         out: &mut String,
     ) {
         for y in 0..rows {
             for x in 0..cols {
                 if x >= life.width || y >= life.height {
-                    push_empty(out, last);
+                    push_overlay_or_empty(out, last, overlay, cols, x, y);
                     continue;
                 }
                 let i = life.idx(x, y);
@@ -95,7 +111,7 @@ impl Renderer {
                     };
                     emit(out, last, color, '·');
                 } else {
-                    push_empty(out, last);
+                    push_overlay_or_empty(out, last, overlay, cols, x, y);
                 }
             }
             if y + 1 < rows {
@@ -110,6 +126,7 @@ impl Renderer {
         scheme: Scheme,
         cols: usize,
         rows: usize,
+        overlay: Option<&[char]>,
         last: &mut Option<Rgb>,
         out: &mut String,
     ) {
@@ -156,7 +173,7 @@ impl Renderer {
                     // A faint braille dot for the fading trail.
                     emit(out, last, color, '\u{2801}');
                 } else {
-                    push_empty(out, last);
+                    push_overlay_or_empty(out, last, overlay, cols, cx, cy);
                 }
             }
             if cy + 1 < rows {
@@ -190,4 +207,26 @@ fn push_empty(out: &mut String, _last: &mut Option<Rgb>) {
     // Foreground color is irrelevant for a blank; leave it as-is to avoid an
     // escape. The space paints nothing, so the terminal background shows.
     out.push(' ');
+}
+
+/// Dim gray used for garden labels.
+const LABEL: Rgb = Rgb(96, 96, 110);
+
+#[inline]
+fn push_overlay_or_empty(
+    out: &mut String,
+    last: &mut Option<Rgb>,
+    overlay: Option<&[char]>,
+    cols: usize,
+    x: usize,
+    y: usize,
+) {
+    if let Some(o) = overlay {
+        let ch = o[y * cols + x];
+        if ch != ' ' {
+            emit(out, last, LABEL, ch);
+            return;
+        }
+    }
+    push_empty(out, last);
 }
