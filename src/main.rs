@@ -30,7 +30,7 @@ use cli::{Config, ParseOutcome, TextMode};
 use life::Life;
 use render::Renderer;
 use scenes::Rng;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -276,12 +276,4 @@ fn handle_key(
         }
         _ => KeyAction::None,
     }
-}
-
-// Keep the `Read`/`Write` traits used even if some paths are compiled out.
-#[allow(dead_code)]
-fn _trait_anchor(mut r: impl Read, mut w: impl Write) {
-    let mut b = [0u8; 1];
-    let _ = r.read(&mut b);
-    let _ = w.write(&b);
 }

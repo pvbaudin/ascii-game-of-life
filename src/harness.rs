@@ -113,6 +113,27 @@ pub fn run_test() -> i32 {
         check("RLE glider parses to 5 live cells", g.cells.len() == 5);
     }
 
+    // 8. Every library pattern parses to a non-empty pattern whose cells fit
+    //    inside its declared bounding box.
+    {
+        let mut ok = true;
+        let mut bad = String::new();
+        for np in patterns::ALL {
+            let p = np.pattern();
+            let fits = !p.cells.is_empty()
+                && p.cells.iter().all(|&(x, y)| x < p.width && y < p.height);
+            if !fits {
+                ok = false;
+                bad.push_str(np.name);
+                bad.push(' ');
+            }
+        }
+        if !ok {
+            println!("    bad patterns: {bad}");
+        }
+        check("all library patterns parse & fit their bounding box", ok);
+    }
+
     println!("\n{} check(s) failed", failures);
     if failures == 0 {
         0
