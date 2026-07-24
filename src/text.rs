@@ -2,8 +2,10 @@
 //!
 //! 1. **Reveal**: a text source is laid across the grid and living cells reveal
 //!    the character beneath them (colored by age); the colony scans/eats through
-//!    the text as it grows and moves. Files scroll slowly and loop; stdin is a
-//!    bottom-anchored live tail.
+//!    the text as it grows and moves. The source is word-wrapped to the terminal
+//!    width into a tall canvas; the visible window scrolls slowly *down* through
+//!    it and **loops back to the top** at the end (just like lavalamp). A live
+//!    stdin stream instead flows as a bottom-anchored tail.
 //! 2. **Seed**: incoming text drives the simulation — each word is stamped into
 //!    the world as live cells (a glider for short words, letters in a tiny font
 //!    for longer ones) which then evolve and dissolve under the rules.
@@ -11,7 +13,7 @@
 //! Robustness lessons baked in (see comments): read stdin as raw bytes and
 //! lossy-decode; keep only the final revision after a carriage return; strip
 //! ANSI escapes and all control characters; build streaming scrollback
-//! incrementally and ease toward the newest line.
+//! incrementally (never re-wrap existing rows) and ease toward the newest line.
 
 use crate::cli::{Config, TextMode};
 use crate::font;
@@ -22,17 +24,30 @@ use crate::tty;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
 use std::sync::mpsc::{self, Receiver};
+use std::time::Instant;
+
+/// Base reveal scroll rate in canvas-rows per second; `--text-speed` scales it.
+const SCROLL_ROWS_PER_SEC: f32 = 1.1;
+/// How quickly a live stream eases toward its newest (bottom) line.
+const STREAM_SCROLL_EASE: f32 = 3.5;
 
 pub struct TextEngine {
     enabled: bool,
     mode: TextMode,
     speed: f32,
     streaming: bool,
-    lines: Vec<String>,
+    /// Raw source lines (file/PDF), kept so the canvas can be re-wrapped on
+    /// resize without re-reading the file. Empty in stream mode.
+    source: Vec<String>,
+    /// Word-wrapped rows at the current width; the scrolling window reads this.
+    canvas: Vec<Vec<char>>,
+    canvas_width: usize,
     rx: Option<Receiver<String>>,
     scroll: f32,
+    scroll_target: f32,
+    last_scroll: Instant,
+    width: usize,
     reveal_buf: Vec<char>,
-    reveal_dims: (usize, usize),
     seed_queue: VecDeque<String>,
     file_cursor: usize,
     gen: u64,
@@ -46,11 +61,15 @@ impl TextEngine {
             mode: cfg.text_mode,
             speed: cfg.text_speed,
             streaming: false,
-            lines: Vec::new(),
+            source: Vec::new(),
+            canvas: Vec::new(),
+            canvas_width: 0,
             rx: None,
             scroll: 0.0,
+            scroll_target: 0.0,
+            last_scroll: Instant::now(),
+            width: 0,
             reveal_buf: Vec::new(),
-            reveal_dims: (0, 0),
             seed_queue: VecDeque::new(),
             file_cursor: 0,
             gen: 0,
@@ -65,9 +84,9 @@ impl TextEngine {
             eng.streaming = true;
             eng.start_stream();
         } else {
-            eng.lines = load_file(src);
-            if eng.lines.is_empty() {
-                eng.lines.push(String::from("(empty text source)"));
+            eng.source = load_file(src);
+            if eng.source.is_empty() {
+                eng.source.push(String::from("(empty text source)"));
             }
         }
         eng
@@ -102,7 +121,6 @@ impl TextEngine {
                 match br.read_until(b'\n', &mut raw) {
                     Ok(0) => break, // EOF
                     Ok(_) => {
-                        // drop trailing newline byte(s)
                         while matches!(raw.last(), Some(b'\n')) {
                             raw.pop();
                         }
@@ -117,71 +135,117 @@ impl TextEngine {
         });
     }
 
-    pub fn resize(&mut self, cols: usize, rows: usize) {
-        self.reveal_dims = (cols, rows);
-        self.reveal_buf = vec![' '; cols.max(1) * rows.max(1)];
+    pub fn resize(&mut self, cols: usize, _rows: usize) {
+        self.width = cols.max(1);
+        if self.streaming {
+            // Existing rows were wrapped to the old width; start fresh so new
+            // lines refill at the new width (don't re-wrap/jitter old content).
+            self.canvas.clear();
+            self.scroll = 0.0;
+            self.scroll_target = 0.0;
+            self.canvas_width = self.width;
+        } else {
+            self.rebuild_canvas(self.width);
+        }
     }
 
-    /// Called once per generation before `life.step()`. Drains streamed input,
-    /// advances scrolling, and (in seed mode) stamps words into the world.
+    /// Word-wrap `line` to width `w`, appending its rows to `canvas`. Always adds
+    /// at least one row (may be blank → a separator). Over-long words hard-break.
+    fn wrap_line(line: &str, w: usize, canvas: &mut Vec<Vec<char>>) {
+        let mut row: Vec<char> = Vec::new();
+        for word in line.split_whitespace() {
+            let wl = word.chars().count();
+            if !row.is_empty() && row.len() + 1 + wl > w {
+                canvas.push(std::mem::take(&mut row));
+            }
+            if wl > w {
+                for ch in word.chars() {
+                    if row.len() >= w {
+                        canvas.push(std::mem::take(&mut row));
+                    }
+                    row.push(ch);
+                }
+            } else {
+                if !row.is_empty() {
+                    row.push(' ');
+                }
+                row.extend(word.chars());
+            }
+        }
+        canvas.push(row);
+    }
+
+    /// Rebuild the wrapped canvas from `source` at width `w` (file/PDF mode).
+    fn rebuild_canvas(&mut self, w: usize) {
+        let w = w.max(1);
+        self.canvas_width = w;
+        self.canvas.clear();
+        for raw in &self.source {
+            Self::wrap_line(raw, w, &mut self.canvas);
+        }
+        // Drop a trailing blank so there's no long gap at the wrap/loop point.
+        if self.canvas.last().map(|r| r.is_empty()).unwrap_or(false) {
+            self.canvas.pop();
+        }
+        if self.scroll >= self.canvas.len() as f32 {
+            self.scroll = 0.0;
+        }
+    }
+
+    /// Drain newly-arrived stream lines, wrapping them into the canvas
+    /// incrementally (existing rows are never re-wrapped) and easing the bottom
+    /// anchor toward the newest line.
+    fn pump_stream(&mut self, rows: usize) {
+        let Some(rx) = &self.rx else { return };
+        let mut got = false;
+        let w = self.width.max(1);
+        while let Ok(line) = rx.try_recv() {
+            if self.mode == TextMode::Seed {
+                for word in line.split_whitespace() {
+                    self.seed_queue.push_back(word.to_string());
+                }
+            } else {
+                Self::wrap_line(&line, w, &mut self.canvas);
+                got = true;
+            }
+        }
+        if got {
+            // Bounded scrollback: a few screenfuls of history.
+            let cap = (rows * 6).max(200);
+            if self.canvas.len() > cap {
+                let drop = self.canvas.len() - cap;
+                self.canvas.drain(0..drop);
+                self.scroll = (self.scroll - drop as f32).max(0.0);
+            }
+            self.scroll_target = (self.canvas.len() as f32 - rows as f32).max(0.0);
+        }
+    }
+
+    /// Called once per generation before `life.step()`. In seed mode, stamps
+    /// queued words into the world. (Reveal draining/scrolling happens in
+    /// `reveal_layer`, which runs every frame so it's smooth even when paused.)
     pub fn pre_step(&mut self, life: &mut Life, cols: usize, rows: usize, _cfg: &Config) {
         if !self.enabled {
             return;
         }
         self.gen += 1;
-
-        // Drain any newly arrived lines.
-        if let Some(rx) = &self.rx {
-            while let Ok(line) = rx.try_recv() {
-                if self.mode == TextMode::Seed {
-                    for w in line.split_whitespace() {
-                        self.seed_queue.push_back(w.to_string());
-                    }
-                } else {
-                    self.lines.push(line);
-                    // Cap scrollback so memory stays bounded.
-                    if self.lines.len() > 5000 {
-                        let drop = self.lines.len() - 5000;
-                        self.lines.drain(0..drop);
-                        self.scroll = (self.scroll - drop as f32).max(0.0);
-                    }
-                }
-            }
-        }
-
-        match self.mode {
-            TextMode::Reveal => self.advance_scroll(rows),
-            TextMode::Seed => self.inject_seed(life, cols, rows),
-        }
-    }
-
-    fn advance_scroll(&mut self, rows: usize) {
-        if self.streaming {
-            // Bottom-anchor a live feed like a log tail; ease toward newest.
-            let target = self.lines.len().saturating_sub(rows) as f32;
-            self.scroll += (target - self.scroll) * 0.15;
-        } else if !self.lines.is_empty() {
-            // Scroll slowly and loop back to the beginning at the end.
-            self.scroll += 0.12 * self.speed;
-            let n = self.lines.len() as f32;
-            if self.scroll >= n {
-                self.scroll -= n;
-            }
+        if self.mode == TextMode::Seed {
+            self.pump_stream(rows);
+            self.inject_seed(life, cols, rows);
         }
     }
 
     fn inject_seed(&mut self, life: &mut Life, cols: usize, rows: usize) {
         // For a file, feed words in gradually so the field stays lively.
-        if !self.streaming && self.seed_queue.is_empty() && !self.lines.is_empty() {
+        if !self.streaming && self.seed_queue.is_empty() && !self.source.is_empty() {
             if self.gen % 12 == 0 {
-                let line = &self.lines[self.file_cursor % self.lines.len()];
+                let line = &self.source[self.file_cursor % self.source.len()];
                 for w in line.split_whitespace() {
                     self.seed_queue.push_back(w.to_string());
                 }
                 self.file_cursor += 1;
             }
         }
-        // Stamp a couple of queued words per generation.
         for _ in 0..2 {
             let Some(word) = self.seed_queue.pop_front() else { break };
             let clean: String = word.chars().filter(|c| !c.is_whitespace()).collect();
@@ -189,14 +253,12 @@ impl TextEngine {
                 continue;
             }
             if clean.chars().count() <= 3 {
-                // Short word → launch a glider.
                 if let Some(g) = patterns::by_name("glider") {
                     let ox = self.rng.below(life.width.saturating_sub(g.width + 1).max(1)) as isize;
                     let oy = self.rng.below(life.height.saturating_sub(g.height + 1).max(1)) as isize;
                     scenes::stamp(life, &g, ox, oy);
                 }
             } else {
-                // Longer word → stamp its letters in the tiny font.
                 let pat = font::word_pattern(&clean);
                 if pat.width < cols && pat.height < rows {
                     let ox = self.rng.below(life.width.saturating_sub(pat.width + 1).max(1)) as isize;
@@ -207,35 +269,69 @@ impl TextEngine {
         }
     }
 
-    /// Build (or reuse) the `cols*rows` reveal grid for the current scroll.
+    /// Advance the reveal scroll by real elapsed time. File mode drifts down at a
+    /// steady rate and loops back to the top; a live stream eases toward its
+    /// newest line (bottom-anchored tail).
+    fn advance_scroll(&mut self) {
+        let now = Instant::now();
+        let dt = (now - self.last_scroll).as_secs_f32().min(0.25);
+        self.last_scroll = now;
+        if self.canvas.is_empty() {
+            return;
+        }
+        if self.streaming {
+            let ease = (STREAM_SCROLL_EASE * dt).min(1.0);
+            self.scroll += (self.scroll_target - self.scroll) * ease;
+        } else {
+            let n = self.canvas.len() as f32;
+            self.scroll += dt * SCROLL_ROWS_PER_SEC * self.speed;
+            if self.scroll >= n {
+                self.scroll -= n; // reached the end → loop back to the start
+            }
+        }
+    }
+
+    /// Build the `cols*rows` reveal grid for the current scroll. Called every
+    /// frame; drains the stream, advances the (looping) scroll, then samples the
+    /// wrapped canvas so each visible row maps to `floor(scroll)+row`.
     pub fn reveal_layer(&mut self, cols: usize, rows: usize) -> &[char] {
-        if self.reveal_dims != (cols, rows) || self.reveal_buf.len() != cols * rows {
-            self.reveal_dims = (cols, rows);
+        self.width = cols.max(1);
+        if self.reveal_buf.len() != cols * rows {
             self.reveal_buf = vec![' '; cols.max(1) * rows.max(1)];
         }
+        // (Re)wrap the file canvas if the width changed.
+        if !self.streaming && self.canvas_width != self.width {
+            self.rebuild_canvas(self.width);
+        }
+        self.pump_stream(rows);
+        self.advance_scroll();
+
         for c in self.reveal_buf.iter_mut() {
             *c = ' ';
         }
-        if self.lines.is_empty() {
+        let n = self.canvas.len();
+        if n == 0 {
             return &self.reveal_buf;
         }
-        let n = self.lines.len();
-        let top = self.scroll.floor().max(0.0) as usize;
+        let base = self.scroll.floor().max(0.0) as usize;
         for y in 0..rows {
-            let li = if self.streaming {
-                let idx = top + y;
+            // File mode wraps (loops the source); a stream doesn't repeat.
+            let cr = if self.streaming {
+                let idx = base + y;
                 if idx >= n {
                     continue;
                 }
                 idx
             } else {
-                (top + y) % n
+                (base + y) % n
             };
-            let line = &self.lines[li];
-            for (x, ch) in line.chars().take(cols).enumerate() {
-                // Never emit a control character into the frame.
-                let ch = if (ch as u32) < 0x20 || ch == '\u{7f}' { ' ' } else { ch };
-                self.reveal_buf[y * cols + x] = ch;
+            let src_row = &self.canvas[cr];
+            for x in 0..cols.min(src_row.len()) {
+                let ch = src_row[x];
+                // Never emit a control character (or blank) into the frame.
+                if ch != ' ' && (ch as u32) >= 0x20 && ch != '\u{7f}' {
+                    self.reveal_buf[y * cols + x] = ch;
+                }
             }
         }
         &self.reveal_buf
@@ -254,7 +350,6 @@ fn clean_line(raw: &[u8]) -> String {
     while i < tail.len() {
         let b = tail[i];
         if b == 0x1b {
-            // ESC — skip the escape sequence.
             i += 1;
             match tail.get(i) {
                 Some(b'[') => {
@@ -267,7 +362,6 @@ fn clean_line(raw: &[u8]) -> String {
                     }
                 }
                 Some(b']') => {
-                    // OSC — until BEL or ESC.
                     i += 1;
                     while i < tail.len() && tail[i] != 0x07 && tail[i] != 0x1b {
                         i += 1;
@@ -281,7 +375,6 @@ fn clean_line(raw: &[u8]) -> String {
             }
             continue;
         }
-        // Strip all other control characters; keep printable bytes.
         if b >= 0x20 && b != 0x7f {
             out.push(b);
         }
@@ -313,6 +406,6 @@ fn load_file(path: &str) -> Vec<String> {
 /// Strip control chars from a decoded string line (for file/PDF text).
 fn sanitize(s: &str) -> String {
     s.chars()
-        .filter(|&c| c == ' ' || (!c.is_control()))
+        .filter(|&c| c == ' ' || !c.is_control())
         .collect()
 }

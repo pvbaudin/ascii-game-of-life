@@ -25,7 +25,10 @@ cargo run --release -- --scene garden --glyphs
   adding more is trivial.
 - **Reactive text modes**: *reveal* (living cells reveal text beneath them) and
   *seed* (incoming words are stamped into the world as live cells that then
-  evolve). Sources: text file, PDF, or live stdin.
+  evolve). Sources: text file, PDF, or live stdin. In reveal mode the source is
+  word-wrapped to the terminal width and the window scrolls slowly down through
+  it, **looping back to the top** at the end (a live stdin stream flows as a
+  bottom-anchored tail instead); tune the rate with `--text-speed`.
 
 ## Scenes
 
