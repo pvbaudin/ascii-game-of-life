@@ -1,0 +1,24 @@
+[package]
+name = "conway-life-ascii"
+version = "0.1.0"
+edition = "2021"
+description = "A full-color ASCII/braille Conway's Game of Life terminal screensaver"
+license = "MIT"
+
+[[bin]]
+name = "life"
+path = "src/main.rs"
+
+[dependencies]
+crossterm = "0.28"
+libc = "0.2"
+pdf-extract = { version = "0.7", optional = true }
+
+[features]
+default = ["pdf"]
+pdf = ["dep:pdf-extract"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
