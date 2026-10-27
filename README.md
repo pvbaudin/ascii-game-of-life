@@ -57,6 +57,9 @@ cargo install --path .
 
 - **Braille renderer** (`U+2800`–`U+28FF`): every character packs a 2×4 grid of
   sub-pixels for 8× the resolution. There's a plainer glyph mode too (`·:+oO@#`).
+  Despite the name, the default braille mode isn't technically ASCII: braille
+  patterns are Unicode characters outside ASCII's 128. "ASCII" here is meant in
+  the loose "ASCII art" sense.
 - **Truecolor, background-transparent** output. Cells are colored by **age** —
   newborns one hue, elders another — with a fading **trail** for recently-dead
   cells. Five palettes: `neon`, `ember`, `bio`, `ocean`, `mono`.
