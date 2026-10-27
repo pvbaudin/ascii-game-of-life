@@ -10,7 +10,6 @@ methuselahs), rather than random noise settling into a few blinkers.
 the words themselves are stamped into the world and come alive.
 
 ```sh
-brew install pvbaudin/tap/ascii-game-of-life
 tail -f app.log | life --text - --text-mode reveal
 ```
 
@@ -33,8 +32,13 @@ The command is `life`.
 **Homebrew** (macOS and Linux):
 
 ```sh
+brew tap pvbaudin/tap
+brew trust --formula pvbaudin/tap/ascii-game-of-life
 brew install pvbaudin/tap/ascii-game-of-life
 ```
+
+Homebrew 7 and later only load formulae from third-party taps that you have
+trusted, which is what `brew trust` does. On older Homebrew, skip that line.
 
 **Prebuilt binaries:** download a `.tar.gz` for macOS (Apple Silicon or Intel)
 or Linux (x86_64 or arm64) from the
