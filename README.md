@@ -1,13 +1,56 @@
-# conway-life-ascii
+# ascii-game-of-life
 
-A full-color, braille-based **Conway's Game of Life** for your terminal — a
-living, beautiful screensaver in the spirit of `asciiquarium` and `cmatrix`,
-written in Rust. It boots straight into fascinating structure: a curated library
-of the most iconic Life forms (still lifes, oscillators, spaceships, a Gosper
-glider gun, methuselahs) rather than random noise settling into a few blinkers.
+A full-color, braille-based **Conway's Game of Life** for your terminal,
+**written in Rust**: a living screensaver in the spirit of `asciiquarium` and
+`cmatrix`. It boots straight into interesting structure, a curated library of
+iconic Life forms (still lifes, oscillators, spaceships, a Gosper glider gun,
+methuselahs), rather than random noise settling into a few blinkers.
 
+**Pipe any text into it.** Living cells reveal the words underneath them, or
+the words themselves are stamped into the world and come alive.
+
+```sh
+brew install pvbaudin/tap/ascii-game-of-life
+tail -f app.log | life --text - --text-mode reveal
 ```
-cargo run --release -- --scene garden --glyphs
+
+The command is `life`.
+
+![life running in a terminal](docs/screenshots/life.gif)
+
+## Screenshots
+
+| Methuselah: `life --scene methuselah --scheme ember` | Garden: `life --scene garden --glyphs --no-trails` |
+|---|---|
+| ![a methuselah erupting](docs/screenshots/methuselah.gif) | ![the labeled garden of still lifes and oscillators](docs/screenshots/garden.png) |
+
+| Text reveal: `life --text file.txt --text-mode reveal --scheme bio` | Fixed edges: `life --wrap off --scheme ocean` |
+|---|---|
+| ![a text file revealed by living cells](docs/screenshots/reveal-text.png) | ![soup with fixed edges in the ocean scheme](docs/screenshots/wrap-off.png) |
+
+## Install
+
+**Homebrew** (macOS and Linux):
+
+```sh
+brew install pvbaudin/tap/ascii-game-of-life
+```
+
+**Prebuilt binaries:** download a `.tar.gz` for macOS (Apple Silicon or Intel)
+or Linux (x86_64 or arm64) from the
+[latest release](https://github.com/pvbaudin/ascii-game-of-life/releases/latest),
+unpack it, and put `life` on your PATH. On Debian/Ubuntu, install the `.deb`
+instead:
+
+```sh
+sudo apt install ./ascii-game-of-life_*.deb
+```
+
+**From source** (needs a [Rust toolchain](https://rustup.rs)):
+
+```sh
+cargo install --git https://github.com/pvbaudin/ascii-game-of-life   # or, from a clone:
+cargo install --path .
 ```
 
 ## Highlights
@@ -111,3 +154,7 @@ cargo run -- --help
 Dependencies: `crossterm` (terminal), `libc` (the stdin fd-dup fix), and
 `pdf-extract` (optional, default-on `pdf` feature; disable with
 `--no-default-features` if you don't need PDF input).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
